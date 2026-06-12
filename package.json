@@ -1,0 +1,38 @@
+{
+  "name": "titan-memory-cli",
+  "version": "0.1.1",
+  "description": "Titan Memory CLI and local-first memory runtime for coding agents",
+  "keywords": [
+    "memory",
+    "codex",
+    "mcp",
+    "agent-memory",
+    "persistent-memory",
+    "coding-agent"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kuwosaad/titan-memory-cli.git"
+  },
+  "homepage": "https://github.com/kuwosaad/titan-memory-cli#readme",
+  "bugs": {
+    "url": "https://github.com/kuwosaad/titan-memory-cli/issues"
+  },
+  "bin": {
+    "titan": "bin/titan.js"
+  },
+  "files": [
+    "bin/",
+    "runtime/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node bin/titan.js codex list-tools --json",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
