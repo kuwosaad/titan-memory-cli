@@ -1,6 +1,6 @@
 {
   "name": "titan-memory-cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Titan Memory CLI and local-first memory runtime for coding agents",
   "keywords": [
     "memory",

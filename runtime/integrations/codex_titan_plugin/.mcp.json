@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "titan-memory": {
-      "command": "titan",
-      "args": ["mcp", "--agent", "codex"],
+      "command": "npx",
+      "args": ["-y", "titan-memory-cli@latest", "mcp", "--agent", "codex"],
       "env": {
         "TITAN_AGENT_NAME": "codex"
       },
