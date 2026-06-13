@@ -1709,6 +1709,108 @@ def run_codex_doctor(*, config_path: Optional[Path] = None) -> int:
     return run_codex_verify(config_path=config_path)
 
 
+def _setup_codex_model_config(agent_home: Path) -> Dict[str, str]:
+    """Configure Codex model files with a simple public-install wizard."""
+    import tools.cli.titan_voice as voice
+
+    extraction_cfg = _load_yaml(ROOT_DIR / "config" / "extraction_models.yaml")
+    embedding_cfg = _load_yaml(ROOT_DIR / "config" / "embedding_models.yaml")
+
+    voice.section(
+        "I need a model to read your conversations and decide what to remember.\n"
+        "Pick the one you want Titan Memory to use with Codex."
+    )
+    provider_pick = voice.prompt_choice(
+        "Which model provider should Titan use?",
+        [
+            ("openai", "OpenAI — simple and reliable"),
+            ("anthropic", "Anthropic — Claude models via OpenRouter"),
+            ("deepseek", "DeepSeek — DeepSeek models via OpenRouter"),
+        ],
+        default=1,
+    )
+
+    if provider_pick == "openai":
+        _prompt_api_key_for_provider("OpenAI", "OPENAI_API_KEY", agent_home)
+        extraction_choice = "openai"
+        extraction_model = voice.prompt_choice(
+            "Which OpenAI model?",
+            [
+                ("gpt-4o-mini", "gpt-4o-mini (recommended)"),
+                ("gpt-4o", "gpt-4o"),
+                ("gpt-4.1-mini", "gpt-4.1-mini"),
+            ],
+            default=1,
+        )
+    elif provider_pick == "anthropic":
+        _prompt_api_key_for_provider("OpenRouter", "OPENROUTER_API_KEY", agent_home)
+        extraction_choice = "openrouter"
+        extraction_model = voice.prompt_choice(
+            "Which Anthropic model?",
+            [
+                ("anthropic/claude-sonnet-4", "Claude Sonnet 4 (recommended)"),
+                ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet"),
+                ("anthropic/claude-3.5-haiku", "Claude 3.5 Haiku"),
+            ],
+            default=1,
+        )
+    else:
+        _prompt_api_key_for_provider("OpenRouter", "OPENROUTER_API_KEY", agent_home)
+        extraction_choice = "openrouter"
+        extraction_model = voice.prompt_choice(
+            "Which DeepSeek model?",
+            [
+                ("deepseek/deepseek-chat", "DeepSeek Chat (recommended)"),
+                ("deepseek/deepseek-reasoner", "DeepSeek Reasoner"),
+                ("deepseek/deepseek-chat-v3.1", "DeepSeek Chat v3.1"),
+            ],
+            default=1,
+        )
+
+    embedding_choice = "ollama"
+    embedding_model = "nomic-embed-text:v1.5"
+    voice.section(
+        "For memory search, Titan uses nomic-embed-text:v1.5 through Ollama.\n"
+        "This model runs locally and is required for semantic search."
+    )
+    if voice.confirm("Download nomic-embed-text:v1.5 now?", default_yes=True):
+        voice.step("Downloading nomic-embed-text:v1.5")
+        try:
+            subprocess.run(["ollama", "pull", embedding_model], check=True, text=True, timeout=300)
+            voice.success("nomic-embed-text:v1.5 is ready")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            voice.warn(f"I couldn't download {embedding_model}. Run: ollama pull {embedding_model}")
+    else:
+        voice.warn(f"Skipping download. Run this later before using memory search: ollama pull {embedding_model}")
+
+    extraction_cfg = _set_config_backend_model(extraction_cfg, extraction_choice, extraction_model)
+    embedding_cfg = _set_config_backend_model(embedding_cfg, embedding_choice, embedding_model)
+    extraction_path, embedding_path = _write_agent_model_configs(agent_home, extraction_cfg, embedding_cfg)
+
+    env_updates: Dict[str, str] = {
+        "TITAN_EXTRACTION_CONFIG_PATH": str(extraction_path),
+        "TITAN_EMBEDDING_CONFIG_PATH": str(embedding_path),
+    }
+    _save_env_updates_for_agent(agent_home, env_updates)
+
+    effective_env = _read_agent_effective_env(agent_home, env_updates)
+    required_keys: List[str] = []
+    for cfg, backend in ((extraction_cfg, extraction_choice), (embedding_cfg, embedding_choice)):
+        key_name = cfg.get(backend, {}).get("api_key_env")
+        if isinstance(key_name, str) and key_name and key_name not in required_keys:
+            required_keys.append(key_name)
+    missing_keys = [key for key in required_keys if not effective_env.get(key)]
+    if missing_keys:
+        voice.warn(f"Missing key(s): {', '.join(missing_keys)}. Memory extraction may not work until set.")
+        for key in missing_keys:
+            voice.info(f"Run: titan key set {key} --agent codex")
+
+    voice.success(f"Config saved to {agent_home}")
+    voice.model_picked(extraction_model, extraction_choice)
+    voice.model_picked(embedding_model, embedding_choice)
+    return env_updates
+
+
 def run_setup_codex(
     *,
     dry_run: bool = False,
@@ -1726,6 +1828,7 @@ def run_setup_codex(
         print("[titan] Codex setup dry run")
         print(f"- Ensure agent home: {resolve_agent_titan_home(CODEX_AGENT_NAME)}")
         print(f"- Ensure trace dir: {trace_dir}")
+        print("- Configure extraction model and nomic embedding model")
         print(f"- Verify plugin files: {CODEX_PLUGIN_DIR}")
         print(f"- Patch Codex config: {config_target}")
         if not skip_plugin_install:
@@ -1735,8 +1838,9 @@ def run_setup_codex(
         print("- Manual final step: trust Titan hooks inside Codex with /hooks")
         return 0
 
-    bootstrap_agent_home(CODEX_AGENT_NAME)
+    agent_home = bootstrap_agent_home(CODEX_AGENT_NAME)
     trace_dir.mkdir(parents=True, exist_ok=True)
+    _setup_codex_model_config(agent_home)
     plugin_ok, missing_plugin_files = _codex_plugin_files_ok()
     if not plugin_ok:
         print("[titan] Codex plugin files are incomplete:")
@@ -1761,7 +1865,6 @@ def run_setup_codex(
         return 1
 
     print(f"[titan] Titan MCP exports {len(tools)} tools for Codex.")
-    print("[titan] First-run guide: python3 integrations/codex_titan_plugin/scripts/titan_first_run.py")
     print("[titan] Next manual step: open Codex, run /hooks, and trust the Titan hook commands.")
     print("[titan] Then run: titan codex verify")
     return 0

@@ -11,7 +11,7 @@ const runtimeDir = path.join(packageRoot, 'runtime');
 const titanScript = path.join(runtimeDir, 'tools', 'cli', 'titan.py');
 const requirementsPath = path.join(runtimeDir, 'requirements.txt');
 const venvDir = process.env.TITAN_NPM_VENV || path.join(os.homedir(), '.titan', 'npm-python');
-const stampPath = path.join(venvDir, '.titan-memory-cli-0.1.1');
+const stampPath = path.join(venvDir, '.titan-memory-cli-0.1.2');
 
 function fail(message, error) {
   console.error(`[titan-memory-cli] ${message}`);
