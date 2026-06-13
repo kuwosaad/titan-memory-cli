@@ -27,7 +27,11 @@ if str(ROOT_DIR) not in sys.path:
 
 DEFAULT_AGENT_NAME = "opencode"
 CODEX_AGENT_NAME = "codex"
-CODEX_PLUGIN_ID = "titan-memory@titan-local"
+CODEX_MARKETPLACE_NAME = "titan-memory-codex"
+CODEX_PLUGIN_NAME = "titan-memory"
+CODEX_PLUGIN_ID = f"{CODEX_PLUGIN_NAME}@{CODEX_MARKETPLACE_NAME}"
+CODEX_LEGACY_PLUGIN_IDS = ["titan-memory@titan-local"]
+CODEX_MARKETPLACE_ROOT = ROOT_DIR / "integrations"
 CODEX_PLUGIN_DIR = ROOT_DIR / "integrations" / "codex_titan_plugin"
 DEFAULT_GRAPH_PORT = 8010
 _explicit_titan_home = os.getenv("TITAN_HOME")
@@ -1594,6 +1598,7 @@ CODEX_REQUIRED_MCP_TOOLS = [
 
 def _codex_plugin_files_ok() -> tuple[bool, List[str]]:
     required_paths = [
+        CODEX_MARKETPLACE_ROOT / ".agents" / "plugins" / "marketplace.json",
         CODEX_PLUGIN_DIR / ".codex-plugin" / "plugin.json",
         CODEX_PLUGIN_DIR / ".mcp.json",
         CODEX_PLUGIN_DIR / "hooks" / "hooks.json",
@@ -1602,7 +1607,6 @@ def _codex_plugin_files_ok() -> tuple[bool, List[str]]:
         CODEX_PLUGIN_DIR / "README.md",
         CODEX_PLUGIN_DIR / "PRIVACY.md",
         CODEX_PLUGIN_DIR / "TERMS.md",
-        CODEX_PLUGIN_DIR / ".agents" / "plugins" / "marketplace.json",
         CODEX_PLUGIN_DIR / "skills" / "titan-memory-workflow" / "SKILL.md",
     ]
     missing = [str(path) for path in required_paths if not path.exists()]
@@ -1621,13 +1625,16 @@ def run_codex_list_tools(*, json_output: bool = False) -> int:
 
 
 def run_codex_reinstall_plugin(*, dry_run: bool = False) -> int:
-    commands = [
-        ["codex", "plugin", "remove", CODEX_PLUGIN_ID, "--json"],
-        ["codex", "plugin", "add", CODEX_PLUGIN_ID, "--json"],
+    commands: List[tuple[List[str], bool]] = [
+        (["codex", "plugin", "marketplace", "remove", CODEX_MARKETPLACE_NAME, "--json"], True),
+        (["codex", "plugin", "marketplace", "add", str(CODEX_MARKETPLACE_ROOT), "--json"], False),
+        (["codex", "plugin", "remove", CODEX_PLUGIN_ID, "--json"], True),
     ]
+    commands.extend((["codex", "plugin", "remove", plugin_id, "--json"], True) for plugin_id in CODEX_LEGACY_PLUGIN_IDS)
+    commands.append((["codex", "plugin", "add", CODEX_PLUGIN_ID, "--json"], False))
     if dry_run:
         print("[titan] Codex plugin reinstall plan:")
-        for command in commands:
+        for command, _ignore_failure in commands:
             print("  " + " ".join(command))
         return 0
 
@@ -1636,11 +1643,11 @@ def run_codex_reinstall_plugin(*, dry_run: bool = False) -> int:
         print("[titan] Install Codex, then rerun: titan codex reinstall-plugin")
         return 1
 
-    for idx, command in enumerate(commands):
-        result = subprocess.run(command, cwd=ROOT_DIR, capture_output=True, text=True, timeout=60)
+    for command, ignore_failure in commands:
+        result = subprocess.run(command, cwd=ROOT_DIR, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            if idx == 0:
-                print(f"[titan] Warning: plugin remove exited {result.returncode} — plugin may not have been installed yet.")
+            if ignore_failure:
+                print(f"[titan] Warning: {' '.join(command[2:4])} exited {result.returncode} — it may not have been configured yet.")
                 if result.stderr.strip():
                     print(f"  stderr: {result.stderr.strip()}")
             else:
@@ -1709,79 +1716,95 @@ def run_codex_doctor(*, config_path: Optional[Path] = None) -> int:
     return run_codex_verify(config_path=config_path)
 
 
-def _setup_codex_model_config(agent_home: Path) -> Dict[str, str]:
+def _setup_codex_model_config(agent_home: Path, *, non_interactive: bool = False) -> Optional[Dict[str, str]]:
     """Configure Codex model files with a simple public-install wizard."""
     import tools.cli.titan_voice as voice
 
     extraction_cfg = _load_yaml(ROOT_DIR / "config" / "extraction_models.yaml")
     embedding_cfg = _load_yaml(ROOT_DIR / "config" / "embedding_models.yaml")
 
-    voice.section(
-        "I need a model to read your conversations and decide what to remember.\n"
-        "Pick the one you want Titan Memory to use with Codex."
-    )
-    provider_pick = voice.prompt_choice(
-        "Which model provider should Titan use?",
-        [
-            ("openai", "OpenAI — simple and reliable"),
-            ("anthropic", "Anthropic — Claude models via OpenRouter"),
-            ("deepseek", "DeepSeek — DeepSeek models via OpenRouter"),
-        ],
-        default=1,
-    )
+    if non_interactive:
+        effective_env = _read_agent_effective_env(agent_home, {})
+        provider_pick = "anthropic" if effective_env.get("OPENROUTER_API_KEY") and not effective_env.get("OPENAI_API_KEY") else "openai"
+    else:
+        voice.section(
+            "I need a model to read your conversations and decide what to remember.\n"
+            "Pick the one you want Titan Memory to use with Codex."
+        )
+        provider_pick = voice.prompt_choice(
+            "Which model provider should Titan use?",
+            [
+                ("openai", "OpenAI — simple and reliable"),
+                ("anthropic", "Anthropic — Claude models via OpenRouter"),
+                ("deepseek", "DeepSeek — DeepSeek models via OpenRouter"),
+            ],
+            default=1,
+        )
 
     if provider_pick == "openai":
-        _prompt_api_key_for_provider("OpenAI", "OPENAI_API_KEY", agent_home)
         extraction_choice = "openai"
-        extraction_model = voice.prompt_choice(
-            "Which OpenAI model?",
-            [
-                ("gpt-4o-mini", "gpt-4o-mini (recommended)"),
-                ("gpt-4o", "gpt-4o"),
-                ("gpt-4.1-mini", "gpt-4.1-mini"),
-            ],
-            default=1,
-        )
+        if non_interactive:
+            extraction_model = "gpt-4o-mini"
+        else:
+            _prompt_api_key_for_provider("OpenAI", "OPENAI_API_KEY", agent_home)
+            extraction_model = voice.prompt_choice(
+                "Which OpenAI model?",
+                [
+                    ("gpt-4o-mini", "gpt-4o-mini (recommended)"),
+                    ("gpt-4o", "gpt-4o"),
+                    ("gpt-4.1-mini", "gpt-4.1-mini"),
+                ],
+                default=1,
+            )
     elif provider_pick == "anthropic":
-        _prompt_api_key_for_provider("OpenRouter", "OPENROUTER_API_KEY", agent_home)
         extraction_choice = "openrouter"
-        extraction_model = voice.prompt_choice(
-            "Which Anthropic model?",
-            [
-                ("anthropic/claude-sonnet-4", "Claude Sonnet 4 (recommended)"),
-                ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet"),
-                ("anthropic/claude-3.5-haiku", "Claude 3.5 Haiku"),
-            ],
-            default=1,
-        )
+        if non_interactive:
+            extraction_model = "anthropic/claude-sonnet-4"
+        else:
+            _prompt_api_key_for_provider("OpenRouter", "OPENROUTER_API_KEY", agent_home)
+            extraction_model = voice.prompt_choice(
+                "Which Anthropic model?",
+                [
+                    ("anthropic/claude-sonnet-4", "Claude Sonnet 4 (recommended)"),
+                    ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet"),
+                    ("anthropic/claude-3.5-haiku", "Claude 3.5 Haiku"),
+                ],
+                default=1,
+            )
     else:
-        _prompt_api_key_for_provider("OpenRouter", "OPENROUTER_API_KEY", agent_home)
         extraction_choice = "openrouter"
-        extraction_model = voice.prompt_choice(
-            "Which DeepSeek model?",
-            [
-                ("deepseek/deepseek-chat", "DeepSeek Chat (recommended)"),
-                ("deepseek/deepseek-reasoner", "DeepSeek Reasoner"),
-                ("deepseek/deepseek-chat-v3.1", "DeepSeek Chat v3.1"),
-            ],
-            default=1,
-        )
+        if non_interactive:
+            extraction_model = "deepseek/deepseek-chat"
+        else:
+            _prompt_api_key_for_provider("OpenRouter", "OPENROUTER_API_KEY", agent_home)
+            extraction_model = voice.prompt_choice(
+                "Which DeepSeek model?",
+                [
+                    ("deepseek/deepseek-chat", "DeepSeek Chat (recommended)"),
+                    ("deepseek/deepseek-reasoner", "DeepSeek Reasoner"),
+                    ("deepseek/deepseek-chat-v3.1", "DeepSeek Chat v3.1"),
+                ],
+                default=1,
+            )
 
     embedding_choice = "ollama"
     embedding_model = "nomic-embed-text:v1.5"
-    voice.section(
-        "For memory search, Titan uses nomic-embed-text:v1.5 through Ollama.\n"
-        "This model runs locally and is required for semantic search."
-    )
-    if voice.confirm("Download nomic-embed-text:v1.5 now?", default_yes=True):
-        voice.step("Downloading nomic-embed-text:v1.5")
-        try:
-            subprocess.run(["ollama", "pull", embedding_model], check=True, text=True, timeout=300)
-            voice.success("nomic-embed-text:v1.5 is ready")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            voice.warn(f"I couldn't download {embedding_model}. Run: ollama pull {embedding_model}")
+    if non_interactive:
+        voice.info(f"Using {embedding_model} for local semantic search. Run `ollama pull {embedding_model}` if it is not installed yet.")
     else:
-        voice.warn(f"Skipping download. Run this later before using memory search: ollama pull {embedding_model}")
+        voice.section(
+            "For memory search, Titan uses nomic-embed-text:v1.5 through Ollama.\n"
+            "This model runs locally and is required for semantic search."
+        )
+        if voice.confirm("Download nomic-embed-text:v1.5 now?", default_yes=True):
+            voice.step("Downloading nomic-embed-text:v1.5")
+            try:
+                subprocess.run(["ollama", "pull", embedding_model], check=True, text=True, timeout=300)
+                voice.success("nomic-embed-text:v1.5 is ready")
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+                voice.warn(f"I couldn't download {embedding_model}. Run: ollama pull {embedding_model}")
+        else:
+            voice.warn(f"Skipping download. Run this later before using memory search: ollama pull {embedding_model}")
 
     extraction_cfg = _set_config_backend_model(extraction_cfg, extraction_choice, extraction_model)
     embedding_cfg = _set_config_backend_model(embedding_cfg, embedding_choice, embedding_model)
@@ -1801,6 +1824,12 @@ def _setup_codex_model_config(agent_home: Path) -> Dict[str, str]:
             required_keys.append(key_name)
     missing_keys = [key for key in required_keys if not effective_env.get(key)]
     if missing_keys:
+        if non_interactive:
+            voice.error(
+                f"Missing required key(s): {', '.join(missing_keys)}",
+                fix=f"titan setup codex --non-interactive --key {missing_keys[0]}=...",
+            )
+            return None
         voice.warn(f"Missing key(s): {', '.join(missing_keys)}. Memory extraction may not work until set.")
         for key in missing_keys:
             voice.info(f"Run: titan key set {key} --agent codex")
@@ -1817,6 +1846,8 @@ def run_setup_codex(
     verify: bool = False,
     config_path: Optional[Path] = None,
     skip_plugin_install: bool = False,
+    non_interactive: bool = False,
+    cli_keys: Optional[List[str]] = None,
 ) -> int:
     config_target = config_path or _default_codex_config_path()
     trace_dir = resolve_effective_spool_dir(CODEX_AGENT_NAME)
@@ -1840,7 +1871,22 @@ def run_setup_codex(
 
     agent_home = bootstrap_agent_home(CODEX_AGENT_NAME)
     trace_dir.mkdir(parents=True, exist_ok=True)
-    _setup_codex_model_config(agent_home)
+    if cli_keys:
+        for item in cli_keys:
+            if "=" not in item:
+                print(f"[titan] Skipping malformed key entry (expected NAME=VALUE): {item}")
+                continue
+            key_name, key_value = item.split("=", 1)
+            key_name = key_name.strip()
+            key_value = key_value.strip()
+            if not key_name or not key_value:
+                continue
+            os.environ[key_name] = key_value
+            upsert_env_keys(agent_home / ".env", {key_name: key_value})
+            print(f"[titan] Key saved: {key_name}")
+
+    if _setup_codex_model_config(agent_home, non_interactive=non_interactive) is None:
+        return 1
     plugin_ok, missing_plugin_files = _codex_plugin_files_ok()
     if not plugin_ok:
         print("[titan] Codex plugin files are incomplete:")
@@ -2289,6 +2335,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 verify=args.verify,
                 config_path=args.codex_config,
                 skip_plugin_install=args.skip_plugin_install,
+                non_interactive=args.non_interactive,
+                cli_keys=list(args.cli_keys) if hasattr(args, "cli_keys") else None,
             )
         return run_setup(
             agent=args.agent,

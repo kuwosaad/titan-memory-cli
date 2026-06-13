@@ -6,7 +6,7 @@
       "env": {
         "TITAN_AGENT_NAME": "codex"
       },
-      "startup_timeout_sec": 20,
+      "startup_timeout_sec": 120,
       "tool_timeout_sec": 120
     }
   }

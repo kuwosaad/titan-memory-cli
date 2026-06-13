@@ -8,7 +8,7 @@
       "name": "titan-memory",
       "source": {
         "source": "local",
-        "path": "./"
+        "path": "./codex_titan_plugin"
       },
       "policy": {
         "installation": "AVAILABLE",
